@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Monkey and Snowmen</title>
+<style>
+    body {
+        margin: 0;
+        overflow: hidden;
+        font-family: monospace;
+        background: #000;
+        color: #0f0;
+    }
+    #gameOverScreen {
+        position: absolute;
+        top: 30%;
+        width: 100%;
+        text-align: center;
+        color: #0f0;
+        font-size: 24px;
+        display: none;
+    }
+    #scoreboard {
+        margin-top: 20px;
+        color: #0f0;
+        font-size: 20px;
+    }
+    #scoreboard ol {
+        padding-left: 20px;
+        text-align: left;
+        display: inline-block;
+        margin: 0;
+    }
+    #restartMsg {
+        margin-top: 20px;
+        font-size: 18px;
+        color: #ffd700;
+    }
+</style>
+</head>
+<body>
+
+<canvas id="gameCanvas"></canvas>
+<div id="gameOverScreen">
+    <div>GAME OVER</div>
+    <div>Your Score: <span id="finalScore"></span></div>
+    <div id="scoreboard">
+        <div>Top 10 Scores:</div>
+        <ol id="topScoresList"></ol>
+    </div>
+    <div id="restartMsg">Press "R" to Restart</div>
+</div>
+
+<script>
+// Settings
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+let W = window.innerWidth;
+let H = window.innerHeight;
+canvas.width = W;
+canvas.height = H;
+
+let score = 0;
+let initialSpeed = 4; 
+let speed = initialSpeed;  
+let speedIncrease = 0.0005; 
+let gameOver = false;
+
+let bananaCollectedCount = 0; 
+let bananaSpawnCount = 0;     
+
+// 5 vines with 1.3 times more space
+const vinesCount = 5;
+let vinePositions = [];
+function updateVinePositions() {
+    vinePositions = [];
+    for (let i = 0; i < vinesCount; i++) {
+        vinePositions.push(H*(0.3 + 0.52*(i/(vinesCount-1))));
+    }
+}
+updateVinePositions();
+
+// Start on the middle vine
+let currentVineIndex = 2; 
+let monkey = {
+    x: 100,
+    y: 0,
+    width: 50,
+    height: 60
+};
+monkey.y = vinePositions[currentVineIndex];
+
+let bananas = [];
+let opponents = []; 
+
+spawnBanana();
+spawnOpponent();
+
+// Lightning shots
+let lightningShots = [];
+const LIGHTNING_DURATION = 200;
+
+// RISE messages per vine
+// Now RISE lasts 10 seconds = 10000 ms
+let riseMessages = [null, null, null, null, null];
+const RISE_DURATION = 10000; // 10 seconds
+const RISE_TEXT = "!RISE";
+
+// Keyboard
+document.addEventListener('keydown', (e) => {
+    if (gameOver) {
+        if (e.code === 'KeyR') {
+            restart();
+        }
+        return;
+    }
+
+    if (e.code === 'ArrowUp') {
+        moveUp();
+    } else if (e.code === 'ArrowDown') {
+        moveDown();
+    } else if (e.code === 'Space') {
+        fireLightning();
+    }
+});
+
+function moveUp() {
+    if (currentVineIndex > 0) {
+        currentVineIndex--;
+        monkey.y = vinePositions[currentVineIndex];
+    }
+}
+
+function moveDown() {
+    if (currentVineIndex < vinesCount - 1) {
+        currentVineIndex++;
+        monkey.y = vinePositions[currentVineIndex];
+    }
+}
+
+function getBananaSpeedFactor() {
+    let groups = Math.floor((bananaCollectedCount - 1) / 10);
+    if (groups < 0) groups = 0;
+    let factor = 1.1 - 0.01 * groups;
+    if (factor < 1.01) factor = 1.01;
+    return factor;
+}
+
+function fireLightning() {
+    if (score > 0) {
+        score -= 1; 
+        let vineY = vinePositions[currentVineIndex];
+        lightningShots.push({
+            vineY: vineY,
+            startTime: performance.now(),
+            duration: LIGHTNING_DURATION
+        });
+
+        opponents = opponents.filter(o => {
+            if (Math.abs(o.y + o.height - vineY) < 1 && o.x > monkey.x) {
+                return false;
+            }
+            return true;
+        });
+    }
+}
+
+let lastTime = performance.now();
+requestAnimationFrame(gameLoop);
+
+function gameLoop(now) {
+    if (gameOver) return;
+    let dt = (now - lastTime)/1000; 
+    lastTime = now;
+
+    update(dt);
+    draw();
+    requestAnimationFrame(gameLoop);
+}
+
+function update(dt) {
+    for (let b of bananas) {
+        b.x -= speed * dt * 60;
+    }
+    for (let o of opponents) {
+        o.x -= speed * dt * 60;
+    }
+
+    bananas = bananas.filter(b => b.x + b.size > 0);
+    opponents = opponents.filter(o => o.x + o.width > 0);
+
+    if (bananas.length < 3) {
+        spawnBanana();
+    }
+    if (opponents.length < 3) {
+        spawnOpponent();
+    }
+
+    // Check banana collisions
+    for (let i = 0; i < bananas.length; i++) {
+        let b = bananas[i];
+        if (checkCollision(monkey, b)) {
+            let vineY = b.vineYIndex;
+            riseMessages[vineY] = performance.now();
+
+            // Check if all vines have active RISE
+            if (riseMessages.every(st => st !== null && performance.now()-st < RISE_DURATION)) {
+                // All active simultaneously
+                score += 1000;
+            }
+
+            if (b.blue) {
+                speed = initialSpeed;
+                bananaCollectedCount = 0; 
+            } else {
+                bananaCollectedCount++;
+                let factor = getBananaSpeedFactor();
+                speed *= factor;
+            }
+            score++;
+            bananas.splice(i, 1);
+            i--;
+        }
+    }
+
+    // Check opponent collisions
+    for (let o of opponents) {
+        if (checkCollision(monkey, o)) {
+            endGame();
+            return;
+        }
+    }
+
+    speed += speedIncrease * dt * 60;
+
+    // Vine effects
+    if (currentVineIndex === 0) {
+        speed *= Math.pow(1.1, dt);
+    } else if (currentVineIndex === 1) {
+        speed *= Math.pow(1.01, dt);
+    } else if (currentVineIndex === 3) {
+        speed *= Math.pow(0.99, dt);
+    } else if (currentVineIndex === 4) {
+        speed *= Math.pow(0.9, dt);
+    }
+
+    // Minimum speed not less than initial
+    speed = Math.max(speed, initialSpeed);
+
+    let nowTime = performance.now();
+    lightningShots = lightningShots.filter(s => nowTime - s.startTime < s.duration);
+
+    // Remove expired RISE messages
+    for (let v = 0; v < vinesCount; v++) {
+        if (riseMessages[v] !== null && (nowTime - riseMessages[v]) > RISE_DURATION) {
+            riseMessages[v] = null;
+        }
+    }
+}
+
+function drawMatrixBackground() {
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0,0,W,H);
+
+    ctx.strokeStyle = '#0f0';
+    ctx.globalAlpha = 0.05;
+    for (let i = 0; i < 100; i++) {
+        let x = Math.random()*W;
+        ctx.beginPath();
+        ctx.moveTo(x,0);
+        ctx.lineTo(x,H);
+        ctx.stroke();
+    }
+    ctx.globalAlpha = 1.0;
+}
+
+function draw() {
+    drawMatrixBackground();
+
+    // Vines thickness
+    for (let i = 0; i < vinePositions.length; i++) {
+        ctx.strokeStyle = '#0f0';
+        ctx.lineWidth = 5 * (i+1);
+        ctx.beginPath();
+        ctx.moveTo(0, vinePositions[i]);
+        ctx.lineTo(W, vinePositions[i]);
+        ctx.stroke();
+    }
+
+    drawMonkey(monkey.x, monkey.y);
+
+    for (let b of bananas) {
+        drawBanana(b.x, b.y, b.size, b.blue);
+    }
+
+    for (let o of opponents) {
+        drawSnowman(o);
+    }
+
+    drawLightningShots();
+    drawRiseMessages();
+
+    ctx.fillStyle = '#0f0';
+    ctx.font = '24px monospace';
+    ctx.fillText('Bananas: ' + score, 20, 40);
+    ctx.fillText('Speed: ' + speed.toFixed(2) + ' mph', W - 200, 40);
+}
+
+function drawRiseMessages() {
+    ctx.fillStyle = '#ffd700';
+    ctx.font = '48px monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    for (let v = 0; v < vinesCount; v++) {
+        if (riseMessages[v] !== null && (performance.now() - riseMessages[v]) < RISE_DURATION) {
+            let y = vinePositions[v] - 50; 
+            ctx.fillText(RISE_TEXT, W/2, y);
+        }
+    }
+}
+
+function drawMonkey(x, y) {
+    let bodyWidth = 50;
+    let bodyHeight = 60;
+    let bodyCenterX = x;
+    let bodyCenterY = y - bodyHeight/2;
+
+    ctx.fillStyle = '#654321'; 
+    ctx.beginPath();
+    ctx.ellipse(bodyCenterX, bodyCenterY, bodyWidth/2, bodyHeight/2, 0, 0, Math.PI*2);
+    ctx.fill();
+
+    let headRadius = bodyWidth/4;
+    let headCenterX = bodyCenterX;
+    let headCenterY = bodyCenterY - bodyHeight/2 - headRadius;
+    ctx.fillStyle = '#654321';
+    ctx.beginPath();
+    ctx.arc(headCenterX, headCenterY, headRadius, 0, Math.PI*2);
+    ctx.fill();
+
+    ctx.fillStyle = '#7d5a4f';
+    ctx.beginPath();
+    ctx.arc(headCenterX, headCenterY, headRadius*0.7, 0, Math.PI*2);
+    ctx.fill();
+
+    ctx.strokeStyle = '#654321';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.arc(bodyCenterX - bodyWidth/2, bodyCenterY, bodyWidth/2, Math.PI*0.5, Math.PI*1.5, false);
+    ctx.stroke();
+
+    ctx.fillStyle = '#c8b560';
+    ctx.fillRect(headCenterX - headRadius, headCenterY - headRadius - 10, headRadius*2, 5);
+    ctx.fillRect(headCenterX - headRadius/1.5, headCenterY - headRadius - 15, headRadius*1.3, 10);
+
+    ctx.fillStyle = '#003300';
+    ctx.fillRect(bodyCenterX - bodyWidth/2, bodyCenterY, bodyWidth, bodyHeight/2);
+}
+
+function drawBanana(x, y, size, blue) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(-Math.PI/4);
+
+    ctx.fillStyle = blue ? '#00f' : '#FFD700';
+
+    ctx.beginPath();
+    ctx.arc(0,0,size/2, 0, Math.PI, false);
+    ctx.fill();
+
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.beginPath();
+    ctx.arc(5,0,size/2-5,0,Math.PI,false);
+    ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
+
+    ctx.restore();
+}
+
+function drawSnowman(o) {
+    let type = o.type; 
+    let ballRadius = o.width/2;
+
+    let headX = o.x + o.width/2;
+    let bottomY = o.y + o.height - ballRadius;
+    let middleY = o.y + o.height - ballRadius*2.5;
+    let topY = o.y + o.height - ballRadius*4;
+
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(headX, bottomY, ballRadius, 0, Math.PI*2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(headX, middleY, ballRadius*0.8, 0, Math.PI*2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(headX, topY, ballRadius*0.6, 0, Math.PI*2);
+    ctx.fill();
+
+    ctx.fillStyle = '#000';
+    ctx.beginPath();
+    ctx.arc(headX - 5, topY - 5, 2, 0, Math.PI*2);
+    ctx.arc(headX + 5, topY - 5, 2, 0, Math.PI*2);
+    ctx.fill();
+
+    ctx.strokeStyle = '#ffa500';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(headX, topY);
+    ctx.lineTo(headX+10, topY);
+    ctx.stroke();
+
+    if (type === 0) {
+        ctx.fillStyle = '#000';
+        ctx.fillRect(headX - ballRadius*0.6, topY - ballRadius*0.6 - 10, ballRadius*1.2, 5);
+        ctx.fillRect(headX - ballRadius*0.3, topY - ballRadius*0.6 - 20, ballRadius*0.6, 10);
+    } else if (type === 1) {
+        ctx.fillStyle = '#f00';
+        ctx.fillRect(headX - ballRadius*0.8, middleY + ballRadius*0.2, ballRadius*1.6, 5);
+    } else {
+        ctx.fillStyle = '#00f';
+        ctx.beginPath();
+        ctx.arc(headX - ballRadius*0.6, topY - 5, 5, 0, Math.PI*2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(headX + ballRadius*0.6, topY - 5, 5, 0, Math.PI*2);
+        ctx.fill();
+        ctx.strokeStyle = '#00f';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(headX - ballRadius*0.6, topY - 5);
+        ctx.lineTo(headX + ballRadius*0.6, topY - 5);
+        ctx.stroke();
+    }
+}
+
+function drawLightningShots() {
+    let now = performance.now();
+    ctx.save();
+    ctx.strokeStyle = '#00f';
+    ctx.lineWidth = 4;
+    for (let s of lightningShots) {
+        if (now - s.startTime < s.duration) {
+            ctx.beginPath();
+            ctx.moveTo(monkey.x, s.vineY);
+            ctx.lineTo(W, s.vineY);
+            ctx.stroke();
+        }
+    }
+    ctx.restore();
+}
+
+function spawnBanana() {
+    bananaSpawnCount++;
+    let vineIndex = Math.floor(Math.random() * vinesCount);
+    let bananaX = W + Math.random()*1000 + 200;
+    let bananaY = vinePositions[vineIndex] - 20;
+    let isBlue = (bananaSpawnCount % 30 === 0); 
+    bananas.push({
+        x: bananaX,
+        y: bananaY,
+        size: 40,
+        blue: isBlue,
+        vineYIndex: vineIndex
+    });
+}
+
+function spawnOpponent() {
+    let vineIndex = Math.floor(Math.random() * vinesCount);
+    let oppX = W + Math.random()*1000 + 200;
+    let oppY = vinePositions[vineIndex];
+    let oppWidth = 40;
+    let oppHeight = 60;
+
+    let type = Math.floor(Math.random()*3);
+    opponents.push({
+        x: oppX,
+        y: oppY - oppHeight,
+        width: oppWidth,
+        height: oppHeight,
+        type: type
+    });
+}
+
+function checkCollision(a, b) {
+    let aX1 = a.x - a.width/2;
+    let aY1 = a.y - a.height;
+    let aX2 = aX1 + a.width;
+    let aY2 = aY1 + a.height;
+
+    let bWidth = b.width || b.size;
+    let bHeight = b.height || b.size;
+    let bX1 = (b.x - (b.width ? 0 : b.size/2));
+    let bY1 = (b.y - (b.height ? 0 : b.size/2));
+    let bX2 = bX1 + bWidth;
+    let bY2 = bY1 + bHeight;
+
+    return !(aX2 < bX1 || aX1 > bX2 || aY2 < bY1 || aY1 > bY2);
+}
+
+function endGame() {
+    gameOver = true;
+    document.getElementById('finalScore').textContent = score;
+    document.getElementById('gameOverScreen').style.display = 'block';
+    saveScore(score);
+    displayTopScores();
+}
+
+function restart() {
+    score = 0;
+    speed = initialSpeed;
+    bananaCollectedCount = 0;
+    gameOver = false;
+    currentVineIndex = 2; 
+    monkey.x = 100;
+    monkey.y = vinePositions[currentVineIndex];
+    bananas = [];
+    opponents = [];
+    lightningShots = [];
+    for (let i=0; i<vinesCount; i++) riseMessages[i] = null;
+    spawnBanana();
+    spawnOpponent();
+    document.getElementById('gameOverScreen').style.display = 'none';
+    lastTime = performance.now();
+    requestAnimationFrame(gameLoop);
+}
+
+function saveScore(s) {
+    let scores = JSON.parse(localStorage.getItem('topScores') || '[]');
+    scores.push(s);
+    scores.sort((a,b) => b - a);
+    scores = scores.slice(0,10);
+    localStorage.setItem('topScores', JSON.stringify(scores));
+}
+
+function displayTopScores() {
+    let scores = JSON.parse(localStorage.getItem('topScores') || '[]');
+    let topScoresList = document.getElementById('topScoresList');
+    topScoresList.innerHTML = '';
+    for (let sc of scores) {
+        let li = document.createElement('li');
+        li.textContent = sc;
+        topScoresList.appendChild(li);
+    }
+}
+
+window.addEventListener('resize', () => {
+    W = window.innerWidth;
+    H = window.innerHeight;
+    canvas.width = W;
+    canvas.height = H;
+    updateVinePositions();
+    monkey.y = vinePositions[currentVineIndex];
+});
+</script>
+
+</body>
+</html>
